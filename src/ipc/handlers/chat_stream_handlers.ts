@@ -58,6 +58,7 @@ import {
 } from "../utils/dyad_tag_parser";
 import { fileExists } from "../utils/file_utils";
 import { FileUploadsState } from "../utils/file_uploads_state";
+import { runHierarchicalWorkflow } from "../../ai/agents/hierarchical_workflow";
 
 type AsyncIterableStream<T> = AsyncIterable<T> & ReadableStream<T>;
 
@@ -671,14 +672,41 @@ This conversation includes one or more image attachments. When the user uploads 
           return fullResponse;
         };
 
-        // When calling streamText, the messages need to be properly formatted for mixed content
-        const { fullStream } = await simpleStreamText({
-          chatMessages,
-          modelClient,
-        });
+        // Determine if we should run the hierarchical workflow
+        // For now, let's enable it by default for "build" mode as per requirements
+        const shouldUseHierarchicalAgents =
+          settings.selectedChatMode === "build";
 
-        // Process the stream as before
-        try {
+        if (shouldUseHierarchicalAgents) {
+          try {
+            fullResponse = await runHierarchicalWorkflow({
+              chatMessages,
+              modelClient,
+              systemPrompt,
+              settings,
+              abortController,
+              chatId: req.chatId,
+              processResponseChunkUpdate,
+              processStreamChunks,
+            });
+          } catch (error) {
+            // Fallback or error handling
+            logger.error("Error in hierarchical workflow:", error);
+            // We could fallback to simple stream, but for now let's just rethrow or show error
+             event.sender.send(
+                "chat:response:error",
+                `Error in agent workflow: ${error}`,
+              );
+              activeStreams.delete(req.chatId);
+          }
+        } else {
+          // When calling streamText, the messages need to be properly formatted for mixed content
+          const { fullStream } = await simpleStreamText({
+            chatMessages,
+            modelClient,
+          });
+
+          // Process the stream as before
           const result = await processStreamChunks({
             fullStream,
             fullResponse,
