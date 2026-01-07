@@ -47,28 +47,36 @@ describe("runHierarchicalWorkflow", () => {
 
   // Mocks for processing functions
   const mockProcessResponseChunkUpdate = vi.fn().mockImplementation(({ fullResponse }) => Promise.resolve(fullResponse));
-  const mockProcessStreamChunks = vi.fn().mockImplementation(({ fullResponse }) => {
-    return Promise.resolve({ fullResponse: fullResponse + " [CHUNK]", incrementalResponse: " [CHUNK]" });
-  });
+
+  // Create a mock implementation that appends content to simulate AI output
+  // This is crucial for testing the self-correction loop logic which inspects the output string
+  const createMockStreamChunks = (responses: string[]) => {
+    let callCount = 0;
+    return vi.fn().mockImplementation(async ({ fullResponse }) => {
+      // Return specific response based on call count if available, otherwise default
+      const chunk = responses[callCount] || " [OK] ";
+      callCount++;
+      return Promise.resolve({ fullResponse: fullResponse + chunk, incrementalResponse: chunk });
+    });
+  };
 
   beforeEach(() => {
     vi.clearAllMocks();
     (token_utils.getMaxTokens as any).mockResolvedValue(1000);
     (thinking_utils.getExtraProviderOptions as any).mockReturnValue({});
 
-    // Mock streamText to return a dummy stream
+    // Mock streamText to return a dummy stream (the text content comes from processStreamChunks mock)
     (ai.streamText as any).mockResolvedValue({
-      fullStream: (async function* () {})(), // Empty async generator
+      fullStream: (async function* () {})(),
     });
   });
 
-  it("should run all three phases (plan, enhance, build)", async () => {
-    // Setup mock outputs for each phase
-    // We can't easily mock sequential different return values for streamText without complex setup
-    // because streamText returns a stream, not the text directly.
-    // The text accumulation happens in processStreamChunks.
-
-    // However, we can verify that streamText is called 3 times.
+  it("should run all three phases (plan, enhance, build) when no critical issues", async () => {
+    const mockProcessStreamChunks = createMockStreamChunks([
+        "## Plan: 1. Do it",
+        "## Enhancements: Looks good",
+        "## Code: <dyad-write...>"
+    ]);
 
     await runHierarchicalWorkflow({
       chatMessages: mockChatMessages,
@@ -81,28 +89,49 @@ describe("runHierarchicalWorkflow", () => {
       processStreamChunks: mockProcessStreamChunks,
     });
 
-    // Verify streamText was called 3 times (Plan, Enhance, Build)
+    // Plan -> Enhance -> Build
     expect(ai.streamText).toHaveBeenCalledTimes(3);
 
-    // Verify processResponseChunkUpdate was called to inject status tags
-    // 3 times for status tags + 3 times for chunks (from mockProcessStreamChunks)
-    // Actually, processResponseChunkUpdate is called inside runStep (once for status) + inside processStreamChunks (for chunks)
-    expect(mockProcessResponseChunkUpdate).toHaveBeenCalled();
-
-    // Verify status tags were injected
     const calls = mockProcessResponseChunkUpdate.mock.calls;
-    const statusTags = calls.filter(call => call[0].fullResponse.includes("<dyad-status"));
-    expect(statusTags.length).toBeGreaterThanOrEqual(3);
-
-    expect(statusTags[0][0].fullResponse).toContain('agent="Planning Agent"');
-    // Note: fullResponse accumulates, so the last call should contain all tags
     const lastCall = calls[calls.length - 1][0].fullResponse;
     expect(lastCall).toContain('agent="Planning Agent"');
     expect(lastCall).toContain('agent="Enhance Agent"');
     expect(lastCall).toContain('agent="Building Agent"');
   });
 
+  it("should trigger self-correction loop when critical issues found", async () => {
+    const mockProcessStreamChunks = createMockStreamChunks([
+        "## Plan: 1. Do it",              // 1. Initial Plan
+        "## CRITICAL ISSUES: Missing X",  // 2. Enhance (Validation Failed)
+        "## Plan: 1. Do it with X",       // 3. Correction Plan
+        "## Endorsement: Looks good",     // 4. Enhance (Validation Passed)
+        "## Code: <dyad-write...>"        // 5. Build
+    ]);
+
+    await runHierarchicalWorkflow({
+      chatMessages: mockChatMessages,
+      modelClient: mockModelClient,
+      systemPrompt: "System Prompt",
+      settings: mockSettings,
+      abortController: mockAbortController,
+      chatId: mockChatId,
+      processResponseChunkUpdate: mockProcessResponseChunkUpdate,
+      processStreamChunks: mockProcessStreamChunks,
+    });
+
+    // 1 (Plan) + 1 (Enhance Fail) + 1 (Plan Retry) + 1 (Enhance Pass) + 1 (Build) = 5
+    expect(ai.streamText).toHaveBeenCalledTimes(5);
+
+    const calls = mockProcessResponseChunkUpdate.mock.calls;
+    const lastCall = calls[calls.length - 1][0].fullResponse;
+
+    // Check that we see the correction status
+    expect(lastCall).toContain('Correcting Plan (Attempt 1)');
+  });
+
   it("should abort early if abortController is triggered", async () => {
+    const mockProcessStreamChunks = createMockStreamChunks(["..."]);
+
     // Mock streamText to trigger abort
     (ai.streamText as any).mockImplementation(async () => {
         mockAbortController.abort();

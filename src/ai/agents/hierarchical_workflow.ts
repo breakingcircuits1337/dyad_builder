@@ -103,8 +103,11 @@ export async function runHierarchicalWorkflow({
     return chunkResult.incrementalResponse;
   };
 
+  let retryCount = 0;
+  const MAX_RETRIES = 1;
+
   // --- Phase 1: Planning ---
-  const planningOutput = await runStep(
+  let planningOutput = await runStep(
     "Planning Agent",
     PLANNING_AGENT_SYSTEM_PROMPT,
     chatMessages
@@ -112,36 +115,63 @@ export async function runHierarchicalWorkflow({
 
   if (abortController.signal.aborted) return fullResponse;
 
-  // --- Phase 2: Enhance ---
-  // We feed the planning output to the Enhancer
-  const enhanceInputMessages: CoreMessage[] = [
-    ...chatMessages,
-    { role: "assistant", content: planningOutput },
-    { role: "user", content: "Please review the plan and suggest enhancements." }
-  ];
+  let enhanceOutput = "";
+  let needsCorrection = true;
 
-  const enhanceOutput = await runStep(
-    "Enhance Agent",
-    ENHANCE_AGENT_SYSTEM_PROMPT,
-    enhanceInputMessages
-  );
+  // --- Phase 2: Enhance & Correction Loop ---
+  while (needsCorrection && retryCount <= MAX_RETRIES) {
+    if (abortController.signal.aborted) return fullResponse;
+
+    const enhanceInputMessages: CoreMessage[] = [
+      ...chatMessages,
+      { role: "assistant", content: planningOutput },
+      { role: "user", content: "Please review the plan for correctness and suggest enhancements. If there are CRITICAL ISSUES, specifically mention them." }
+    ];
+
+    enhanceOutput = await runStep(
+      "Enhance Agent",
+      ENHANCE_AGENT_SYSTEM_PROMPT,
+      enhanceInputMessages
+    );
+
+    // Check for critical issues in the Enhancer's output
+    if (enhanceOutput.includes("## CRITICAL ISSUES") && retryCount < MAX_RETRIES) {
+      retryCount++;
+      const statusTag = `\n\n<dyad-status agent="Planning Agent">Correcting Plan (Attempt ${retryCount})...</dyad-status>\n\n`;
+      fullResponse += statusTag;
+      await processResponseChunkUpdate({ fullResponse });
+
+      // Re-run Planner with feedback
+      const correctionMessages: CoreMessage[] = [
+        ...chatMessages,
+        { role: "assistant", content: planningOutput },
+        { role: "user", content: `The Enhance Agent found critical issues:\n${enhanceOutput}\n\nPlease regenerate the plan to address these issues.` }
+      ];
+
+      planningOutput = await runStep(
+        "Planning Agent",
+        PLANNING_AGENT_SYSTEM_PROMPT,
+        correctionMessages
+      );
+    } else {
+      needsCorrection = false;
+    }
+  }
 
   if (abortController.signal.aborted) return fullResponse;
 
   // --- Phase 3: Building (The Main Builder) ---
-  // The Builder receives the original context + Plan + Enhancements.
-  // We can construct a synthetic history or just append it to the system prompt/last message.
-  // Best approach: Append the Plan and Enhancements to the conversation history so the Builder sees it.
+  // The Builder receives the original context + Final Plan + Final Enhancements.
 
   const builderMessages: CoreMessage[] = [
     ...chatMessages,
     {
       role: "assistant",
-      content: `Here is the plan I created:\n${planningOutput}\n\nAnd here are some enhancements:\n${enhanceOutput}`
+      content: `Here is the approved plan:\n${planningOutput}\n\nAnd the validation/enhancements:\n${enhanceOutput}`
     },
     {
       role: "user",
-      content: "Great, please proceed with building the app following the plan and enhancements."
+      content: "Great, please proceed with building the app following the plan and validation."
     }
   ];
 
