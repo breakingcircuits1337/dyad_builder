@@ -17,6 +17,7 @@ import { CustomTagState } from "./stateTypes";
 import { DyadOutput } from "./DyadOutput";
 import { DyadProblemSummary } from "./DyadProblemSummary";
 import { IpcClient } from "@/ipc/ipc_client";
+import { DyadStatus } from "./DyadStatus";
 
 interface DyadMarkdownParserProps {
   content: string;
@@ -122,6 +123,7 @@ function preprocessUnclosedTags(content: string): {
     "dyad-chat-summary",
     "dyad-edit",
     "dyad-codebase-context",
+    "dyad-status",
     "think",
   ];
 
@@ -417,6 +419,20 @@ function renderCustomTag(
     case "dyad-chat-summary":
       // Don't render anything for dyad-chat-summary
       return null;
+
+    case "dyad-status":
+      return (
+        <DyadStatus
+          node={{
+            properties: {
+              agent: attributes.agent || "",
+              state: getState({ isStreaming, inProgress }),
+            },
+          }}
+        >
+          {content}
+        </DyadStatus>
+      );
 
     default:
       return null;

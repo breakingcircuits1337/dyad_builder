@@ -80,7 +80,7 @@
     "prettier": "3.5.3",
     "typescript": "^5.8.3",
     "vite": "^5.4.17",
-    "vitest": "^3.1.1"
+    "vitest": "^3.2.4"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^1.2.8",
@@ -91,6 +91,7 @@
     "@dyad-sh/supabase-management-js": "v1.0.0",
     "@monaco-editor/react": "^4.7.0-rc.0",
     "@neondatabase/api-client": "^2.1.0",
+    "@neondatabase/serverless": "^1.0.2",
     "@openrouter/ai-sdk-provider": "^0.4.5",
     "@radix-ui/react-accordion": "^1.2.4",
     "@radix-ui/react-alert-dialog": "^1.1.13",
