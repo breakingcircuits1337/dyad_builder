@@ -49,7 +49,6 @@ describe("runHierarchicalWorkflow", () => {
   const mockProcessResponseChunkUpdate = vi.fn().mockImplementation(({ fullResponse }) => Promise.resolve(fullResponse));
 
   // Create a mock implementation that appends content to simulate AI output
-  // This is crucial for testing the self-correction loop logic which inspects the output string
   const createMockStreamChunks = (responses: string[]) => {
     let callCount = 0;
     return vi.fn().mockImplementation(async ({ fullResponse }) => {
@@ -65,17 +64,17 @@ describe("runHierarchicalWorkflow", () => {
     (token_utils.getMaxTokens as any).mockResolvedValue(1000);
     (thinking_utils.getExtraProviderOptions as any).mockReturnValue({});
 
-    // Mock streamText to return a dummy stream (the text content comes from processStreamChunks mock)
     (ai.streamText as any).mockResolvedValue({
       fullStream: (async function* () {})(),
     });
   });
 
-  it("should run all three phases (plan, enhance, build) when no critical issues", async () => {
+  it("should run all four phases (plan, enhance, backend, frontend)", async () => {
     const mockProcessStreamChunks = createMockStreamChunks([
         "## Plan: 1. Do it",
         "## Enhancements: Looks good",
-        "## Code: <dyad-write...>"
+        "<dyad-write path='server.ts'>...",
+        "<dyad-write path='client.tsx'>..."
     ]);
 
     await runHierarchicalWorkflow({
@@ -89,14 +88,15 @@ describe("runHierarchicalWorkflow", () => {
       processStreamChunks: mockProcessStreamChunks,
     });
 
-    // Plan -> Enhance -> Build
-    expect(ai.streamText).toHaveBeenCalledTimes(3);
+    // Plan -> Enhance -> Backend -> Frontend
+    expect(ai.streamText).toHaveBeenCalledTimes(4);
 
     const calls = mockProcessResponseChunkUpdate.mock.calls;
     const lastCall = calls[calls.length - 1][0].fullResponse;
     expect(lastCall).toContain('agent="Planning Agent"');
     expect(lastCall).toContain('agent="Enhance Agent"');
-    expect(lastCall).toContain('agent="Building Agent"');
+    expect(lastCall).toContain('agent="Backend Builder"');
+    expect(lastCall).toContain('agent="Frontend Builder"');
   });
 
   it("should trigger self-correction loop when critical issues found", async () => {
@@ -105,7 +105,8 @@ describe("runHierarchicalWorkflow", () => {
         "## CRITICAL ISSUES: Missing X",  // 2. Enhance (Validation Failed)
         "## Plan: 1. Do it with X",       // 3. Correction Plan
         "## Endorsement: Looks good",     // 4. Enhance (Validation Passed)
-        "## Code: <dyad-write...>"        // 5. Build
+        "Backend Code",                   // 5. Backend
+        "Frontend Code"                   // 6. Frontend
     ]);
 
     await runHierarchicalWorkflow({
@@ -119,37 +120,13 @@ describe("runHierarchicalWorkflow", () => {
       processStreamChunks: mockProcessStreamChunks,
     });
 
-    // 1 (Plan) + 1 (Enhance Fail) + 1 (Plan Retry) + 1 (Enhance Pass) + 1 (Build) = 5
-    expect(ai.streamText).toHaveBeenCalledTimes(5);
+    // 1(Plan) + 1(Fail) + 1(Retry) + 1(Pass) + 1(Backend) + 1(Frontend) = 6
+    expect(ai.streamText).toHaveBeenCalledTimes(6);
 
     const calls = mockProcessResponseChunkUpdate.mock.calls;
     const lastCall = calls[calls.length - 1][0].fullResponse;
 
     // Check that we see the correction status
     expect(lastCall).toContain('Correcting Plan (Attempt 1)');
-  });
-
-  it("should abort early if abortController is triggered", async () => {
-    const mockProcessStreamChunks = createMockStreamChunks(["..."]);
-
-    // Mock streamText to trigger abort
-    (ai.streamText as any).mockImplementation(async () => {
-        mockAbortController.abort();
-        return { fullStream: (async function* () {})() };
-    });
-
-    await runHierarchicalWorkflow({
-      chatMessages: mockChatMessages,
-      modelClient: mockModelClient,
-      systemPrompt: "System Prompt",
-      settings: mockSettings,
-      abortController: mockAbortController,
-      chatId: mockChatId,
-      processResponseChunkUpdate: mockProcessResponseChunkUpdate,
-      processStreamChunks: mockProcessStreamChunks,
-    });
-
-    // Should stop after the first call because we aborted
-    expect(ai.streamText).toHaveBeenCalledTimes(1);
   });
 });

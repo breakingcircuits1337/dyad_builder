@@ -3,6 +3,8 @@ import { ModelClient } from "../../ipc/utils/get_model_client";
 import {
   PLANNING_AGENT_SYSTEM_PROMPT,
   ENHANCE_AGENT_SYSTEM_PROMPT,
+  BACKEND_BUILDER_SYSTEM_PROMPT,
+  FRONTEND_BUILDER_SYSTEM_PROMPT,
 } from "./prompts";
 import { getMaxTokens } from "../../ipc/utils/token_utils";
 import { v4 as uuidv4 } from "uuid";
@@ -35,7 +37,7 @@ interface HierarchicalWorkflowParams {
 export async function runHierarchicalWorkflow({
   chatMessages,
   modelClient,
-  systemPrompt, // This is the Builder's system prompt (the main one)
+  systemPrompt, // This is the standard Builder system prompt (not used directly now)
   settings,
   abortController,
   chatId,
@@ -71,11 +73,6 @@ export async function runHierarchicalWorkflow({
     await processResponseChunkUpdate({ fullResponse });
 
     const maxTokens = await getMaxTokens(settings.selectedModel);
-
-    // We only send the last user message + context for the agents to save tokens/confusion,
-    // or we can send full history. Let's send full history but with a modified system prompt.
-    // Actually, we need to be careful. The agents are "separate entities".
-    // Let's treat them as continuation of the conversation for simplicity in context management.
 
     const messages = [...history];
 
@@ -160,10 +157,8 @@ export async function runHierarchicalWorkflow({
 
   if (abortController.signal.aborted) return fullResponse;
 
-  // --- Phase 3: Building (The Main Builder) ---
-  // The Builder receives the original context + Final Plan + Final Enhancements.
-
-  const builderMessages: CoreMessage[] = [
+  // --- Phase 3: Building (Backend) ---
+  const backendBuilderMessages: CoreMessage[] = [
     ...chatMessages,
     {
       role: "assistant",
@@ -171,36 +166,36 @@ export async function runHierarchicalWorkflow({
     },
     {
       role: "user",
-      content: "Great, please proceed with building the app following the plan and validation."
+      content: "Please implement the backend tasks according to the plan."
     }
   ];
 
-  // Run the Builder (Standard System Prompt)
-  const statusTag = `\n\n<dyad-status agent="Building Agent">Writing code...</dyad-status>\n\n`;
-  fullResponse += statusTag;
-  await processResponseChunkUpdate({ fullResponse });
+  const backendOutput = await runStep(
+    "Backend Builder",
+    BACKEND_BUILDER_SYSTEM_PROMPT,
+    backendBuilderMessages
+  );
 
-  const builderResult = await streamText({
-    maxTokens: await getMaxTokens(settings.selectedModel),
-    temperature: 0,
-    maxRetries: 2,
-    model: modelClient.model,
-    providerOptions,
-    system: systemPrompt,
-    messages: builderMessages.filter((m) => m.content),
-    abortSignal: abortController.signal,
-  });
+  if (abortController.signal.aborted) return fullResponse;
 
-  const { fullStream } = builderResult;
-  const chunkResult = await processStreamChunks({
-    fullStream,
-    fullResponse,
-    abortController,
-    chatId,
-    processResponseChunkUpdate,
-  });
+  // --- Phase 4: Building (Frontend) ---
+  const frontendBuilderMessages: CoreMessage[] = [
+    ...chatMessages,
+    {
+      role: "assistant",
+      content: `Here is the approved plan:\n${planningOutput}\n\nBackend Implementation:\n${backendOutput}`
+    },
+    {
+      role: "user",
+      content: "Please implement the frontend tasks. Use the backend implementation as context."
+    }
+  ];
 
-  fullResponse = chunkResult.fullResponse;
+  await runStep(
+    "Frontend Builder",
+    FRONTEND_BUILDER_SYSTEM_PROMPT,
+    frontendBuilderMessages
+  );
 
   return fullResponse;
 }
